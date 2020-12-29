@@ -144,7 +144,7 @@ static size_t sysctl_read(const char *name) {
     } else {
         return singleCpu;
     }
-#elif defined(__i386__)
+#elif defined(__x86_64__)
     // in x86 we can emulate weak on strong
     return hostCount;
 #else
@@ -166,7 +166,7 @@ static size_t sysctl_read(const char *name) {
 
 - (void)targetSpecificConfiguration {
     if ([self.configuration.systemTarget hasPrefix:@"virt"]) {
-        if (self.useHypervisor && [self.configuration.systemArchitecture isEqualToString:@"aarch64"]) {
+        if (!self.useHypervisor && [self.configuration.systemArchitecture isEqualToString:@"aarch64"]) {
             [self pushArgv:@"-cpu"];
             [self pushArgv:@"cortex-a72"];
         }
@@ -175,9 +175,9 @@ static size_t sysctl_read(const char *name) {
         if (!self.hasCustomBios && [[NSFileManager defaultManager] fileExistsAtPath:path.path]) {
             [self pushArgv:@"-bios"];
             [self pushArgv:path.path]; // accessDataWithBookmark called already
-            [self pushArgv:@"-device"];
-            [self pushArgv:@"virtio-ramfb"];
         }
+        [self pushArgv:@"-device"];
+        [self pushArgv:@"virtio-ramfb"];
     }
 }
 
@@ -426,7 +426,7 @@ static size_t sysctl_read(const char *name) {
     [self pushArgv:self.resourceURL.path];
     [self pushArgv:@"-S"]; // startup stopped
     [self pushArgv:@"-qmp"];
-    [self pushArgv:[NSString stringWithFormat:@"tcp:localhost:%lu,server,nowait", self.qmpPort]];
+    [self pushArgv:[NSString stringWithFormat:@"tcp:127.0.0.1:%lu,server,nowait", self.qmpPort]];
     if (self.configuration.displayConsoleOnly) {
         [self pushArgv:@"-nographic"];
         // terminal character device
@@ -447,7 +447,7 @@ static size_t sysctl_read(const char *name) {
 
 - (void)argsFromConfiguration {
     [self pushArgv:@"-smp"];
-    [self pushArgv:[NSString stringWithFormat:@"cpus=%lu,sockets=1,cores=%lu,threads=%lu", self.emulatedCpuCount.cpus, self.emulatedCpuCount.cpus, self.emulatedCpuCount.threads / self.emulatedCpuCount.cpus]];
+    [self pushArgv:[NSString stringWithFormat:@"cpus=%lu,sockets=1,cores=%lu,threads=%lu", self.emulatedCpuCount.threads, self.emulatedCpuCount.cpus, self.emulatedCpuCount.threads / self.emulatedCpuCount.cpus]];
     [self pushArgv:@"-machine"];
     [self pushArgv:[NSString stringWithFormat:@"%@,%@", self.configuration.systemTarget, [self machineProperties]]];
     if (self.useHypervisor) {

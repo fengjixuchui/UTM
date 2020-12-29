@@ -84,6 +84,9 @@ class VMDisplayMetalWindowController: VMDisplayWindowController, UTMSpiceIODeleg
             guard let size = change.newValue else { return }
             self.displaySizeDidChange(size: size)
         }
+        if vmConfiguration!.shareClipboardEnabled {
+            UTMPasteboard.general.requestPollingMode(forHashable: self) // start clipboard polling
+        }
         super.enterLive()
         resizeConsoleToolbarItem.isEnabled = false // disable item
     }
@@ -93,6 +96,9 @@ class VMDisplayMetalWindowController: VMDisplayWindowController, UTMSpiceIODeleg
             metalView.isHidden = true
             screenshotView.image = vm.screenshot?.image
             screenshotView.isHidden = false
+        }
+        if vmConfiguration!.shareClipboardEnabled {
+            UTMPasteboard.general.releasePollingMode(forHashable: self) // stop clipboard polling
         }
         super.enterSuspended(isBusy: busy)
     }
@@ -209,8 +215,10 @@ extension VMDisplayMetalWindowController: VMMetalViewInputDelegate {
         let frameSize = metalView.frame.size
         let newX = absolutePoint.x * currentScreenScale / viewportScale
         let newY = (frameSize.height - absolutePoint.y) * currentScreenScale / viewportScale
+        let point = CGPoint(x: newX, y: newY)
         logger.debug("move cursor: cocoa (\(absolutePoint.x), \(absolutePoint.y)), native (\(newX), \(newY))")
-        vmInput?.sendMouseMotion(button, point: CGPoint(x: newX, y: newY))
+        vmInput?.sendMouseMotion(button, point: point)
+        vmInput?.forceCursorPosition(point) // required to show cursor on screen
     }
     
     func mouseMove(relativePoint: CGPoint, button: CSInputButton) {
