@@ -309,18 +309,10 @@ fixup () {
 fixup_all () {
     OLDIFS=$IFS
     IFS=$'\n'
-    QEMU_ENTITLEMENTS="$PATCHES_DIR/QEMU.entitlements"
     FILES=$(find "$SYSROOT_DIR/lib" -type f -name "*.dylib")
     for f in $FILES
     do
         fixup $f
-    done
-    FILES=$(find "$SYSROOT_DIR/bin" -type f -name "qemu-*")
-    for f in $FILES
-    do
-        fixup $f
-        install_name_tool -add_rpath "@executable_path/../../../../Frameworks" "$f"
-        codesign --force --sign - --entitlements "$QEMU_ENTITLEMENTS" --timestamp=none "$f"
     done
     IFS=$OLDIFS
 }
@@ -428,7 +420,7 @@ macos )
     CFLAGS_MINVER="-mmacos-version-min=$SDKMINVER"
     CFLAGS_TARGET="-target $ARCH-apple-macos"
     PLATFORM_FAMILY_NAME="macOS"
-    QEMU_PLATFORM_BUILD_FLAGS="--disable-cocoa --disable-curl --cpu=$CPU"
+    QEMU_PLATFORM_BUILD_FLAGS="--enable-shared-lib --disable-cocoa --disable-curl --cpu=$CPU"
     ;;
 * )
     usage

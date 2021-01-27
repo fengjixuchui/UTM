@@ -1,5 +1,5 @@
 //
-// Copyright © 2019 osy. All rights reserved.
+// Copyright © 2021 osy. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,21 +14,11 @@
 // limitations under the License.
 //
 
-#import <Foundation/Foundation.h>
+#ifndef Bootstrap_h
+#define Bootstrap_h
 
-NS_ASSUME_NONNULL_BEGIN
+#include <unistd.h>
 
-@interface CSMain : NSObject
+pid_t startQemu(const char *dylibPath, int argc, const char **argv, int newStdout, int newStderr);
 
-@property (nonatomic, readonly) BOOL running;
-@property (nonatomic, readonly) void *glibMainContext;
-
-+ (CSMain *)sharedInstance;
-- (instancetype)init NS_UNAVAILABLE;
-- (void)spiceSetDebug:(BOOL)enabled;
-- (BOOL)spiceStart;
-- (void)spiceStop;
-
-@end
-
-NS_ASSUME_NONNULL_END
+#endif /* Bootstrap_h */

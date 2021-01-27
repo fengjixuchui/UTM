@@ -41,6 +41,7 @@ typedef struct {
 @property (nonatomic, readonly) CPUCount emulatedCpuCount;
 @property (nonatomic, readonly) BOOL useHypervisor;
 @property (nonatomic, readonly) BOOL hasCustomBios;
+@property (nonatomic, readonly) BOOL usbSupported;
 
 @end
 
@@ -97,15 +98,11 @@ static size_t sysctl_read(const char *name) {
 
 - (NSArray<NSString *> *)argv {
     NSArray<NSString *> *argv = [super argv];
-    if (argv.count > 0) {
-        return argv;
-    } else {
-        [self argsRequired];
-        if (!self.configuration.ignoreAllConfiguration) {
-            [self argsFromConfiguration];
-        }
-        return [super argv];
+    if (argv.count == 0) {
+        // HACK: when called from QEMU settings page
+        [self updateArgvWithUserOptions:NO];
     }
+    return [super argv];
 }
 
 - (NSURL *)resourceURL {
@@ -166,10 +163,6 @@ static size_t sysctl_read(const char *name) {
 
 - (void)targetSpecificConfiguration {
     if ([self.configuration.systemTarget hasPrefix:@"virt"]) {
-        if (!self.useHypervisor && [self.configuration.systemArchitecture isEqualToString:@"aarch64"]) {
-            [self pushArgv:@"-cpu"];
-            [self pushArgv:@"cortex-a72"];
-        }
         NSString *name = [NSString stringWithFormat:@"edk2-%@-code.fd", self.configuration.systemArchitecture];
         NSURL *path = [self.resourceURL URLByAppendingPathComponent:name];
         if (!self.hasCustomBios && [[NSFileManager defaultManager] fileExistsAtPath:path.path]) {
@@ -193,6 +186,28 @@ static size_t sysctl_read(const char *name) {
     } else {
         return interface; // no expand needed
     }
+}
+
+- (void)argsForCpu {
+    if ([self.configuration.systemCPU isEqualToString:@"default"] && self.useHypervisor) {
+        // if default and not hypervisor, we don't pass any -cpu argument
+        [self pushArgv:@"-cpu"];
+        [self pushArgv:@"host"];
+    } else if (self.configuration.systemCPU.length > 0 && ![self.configuration.systemCPU isEqualToString:@"default"]) {
+        NSString *cpu = self.configuration.systemCPU;
+        for (NSString *flag in self.configuration.systemCPUFlags) {
+            unichar prefix = [flag characterAtIndex:0];
+            if (prefix != '-' && prefix != '+') {
+                cpu = [cpu stringByAppendingFormat:@",+%@", flag];
+            } else {
+                cpu = [cpu stringByAppendingFormat:@",%@", flag];
+            }
+        }
+        [self pushArgv:@"-cpu"];
+        [self pushArgv:cpu];
+    }
+    [self pushArgv:@"-smp"];
+    [self pushArgv:[NSString stringWithFormat:@"cpus=%lu,sockets=1,cores=%lu,threads=%lu", self.emulatedCpuCount.threads, self.emulatedCpuCount.cpus, self.emulatedCpuCount.threads / self.emulatedCpuCount.cpus]];
 }
 
 - (void)argsForDrives {
@@ -257,6 +272,9 @@ static size_t sysctl_read(const char *name) {
                     [self pushArgv:fullPathURL.path];
                 }
                 break;
+            }
+            case UTMDiskImageTypeNone: {
+                break; // ignore this image
             }
             default: {
                 UTMLog(@"WARNING: unknown image type %lu, ignoring image %@", type, fullPathURL);
@@ -363,9 +381,11 @@ static size_t sysctl_read(const char *name) {
     if (self.configuration.systemForceMulticore) {
         accel = [accel stringByAppendingString:@",thread=multi"];
     }
-    if ([self.configuration.systemJitCacheSize integerValue] > 0) {
-        accel = [accel stringByAppendingFormat:@",tb-size=%ld", (long)[self.configuration.systemJitCacheSize integerValue]];
+    NSInteger tb_size = self.configuration.systemMemory.integerValue / 4;
+    if (self.configuration.systemJitCacheSize.integerValue > 0) {
+        tb_size = self.configuration.systemJitCacheSize.integerValue;
     }
+    accel = [accel stringByAppendingFormat:@",tb-size=%ld", tb_size];
     
     // use mirror mapping when we don't have JIT entitlements
     if (!jb_has_jit_entitlement()) {
@@ -409,6 +429,10 @@ static size_t sysctl_read(const char *name) {
     return NO;
 }
 
+- (BOOL)usbSupported {
+    return ![self.configuration.systemTarget isEqualToString:@"isapc"];
+}
+
 - (NSString *)machineProperties {
     if (self.configuration.systemMachineProperties.length > 0) {
         return self.configuration.systemMachineProperties; // use specified properties
@@ -446,15 +470,12 @@ static size_t sysctl_read(const char *name) {
 }
 
 - (void)argsFromConfiguration {
-    [self pushArgv:@"-smp"];
-    [self pushArgv:[NSString stringWithFormat:@"cpus=%lu,sockets=1,cores=%lu,threads=%lu", self.emulatedCpuCount.threads, self.emulatedCpuCount.cpus, self.emulatedCpuCount.threads / self.emulatedCpuCount.cpus]];
+    [self argsForCpu];
     [self pushArgv:@"-machine"];
     [self pushArgv:[NSString stringWithFormat:@"%@,%@", self.configuration.systemTarget, [self machineProperties]]];
     if (self.useHypervisor) {
         [self pushArgv:@"-accel"];
         [self pushArgv:@"hvf"];
-        [self pushArgv:@"-cpu"];
-        [self pushArgv:@"host"];
     }
     [self pushArgv:@"-accel"];
     [self pushArgv:[self tcgAccelProperties]];
@@ -470,13 +491,19 @@ static size_t sysctl_read(const char *name) {
     }
     [self pushArgv:@"-m"];
     [self pushArgv:[self.configuration.systemMemory stringValue]];
+#if TARGET_OS_OSX
+    // FIXME: sound support broken after fork(), so we disable for now
+    if (!self.configuration.displayConsoleOnly)
+#endif
     if (self.configuration.soundEnabled) {
         [self pushArgv:@"-soundhw"];
         [self pushArgv:self.configuration.soundCard];
     }
     [self pushArgv:@"-name"];
     [self pushArgv:self.configuration.name];
-    [self argsForUsb];
+    if (self.usbSupported) {
+        [self argsForUsb];
+    }
     [self argsForDrives];
     [self argsForNetwork];
     if (self.snapshot) {
@@ -532,12 +559,18 @@ static size_t sysctl_read(const char *name) {
     return (_qemu_init != NULL) && (_qemu_main_loop != NULL) && (_qemu_cleanup != NULL);
 }
 
-- (void)startWithCompletion:(void (^)(BOOL, NSString * _Nonnull))completion {
+- (void)updateArgvWithUserOptions:(BOOL)userOptions {
     [self argsRequired];
     if (!self.configuration.ignoreAllConfiguration) {
         [self argsFromConfiguration];
     }
-    [self argsFromUser];
+    if (userOptions) {
+        [self argsFromUser];
+    }
+}
+
+- (void)startWithCompletion:(void (^)(BOOL, NSString * _Nonnull))completion {
+    [self updateArgvWithUserOptions:YES];
     [self startQemu:self.configuration.systemArchitecture completion:completion];
 }
 

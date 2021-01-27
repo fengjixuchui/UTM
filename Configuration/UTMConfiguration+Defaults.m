@@ -25,7 +25,8 @@
 
 - (void)loadDefaults {
     self.systemArchitecture = @"x86_64";
-    self.systemTarget = @"pc";
+    self.systemCPU = @"default";
+    self.systemTarget = @"q35";
     self.systemMemory = @512;
     self.systemBootDevice = @"cd";
     self.systemUUID = [[NSUUID UUID] UUIDString];
@@ -44,7 +45,7 @@
     self.selectedCustomIconPath = nil;
 }
 
-- (void)loadDefaultsForTarget:(NSString *)target {
+- (void)loadDefaultsForTarget:(nullable NSString *)target architecture:(nullable NSString *)architecture {
     if ([target hasPrefix:@"pc"] || [target hasPrefix:@"q35"]) {
         self.soundCard = @"ac97";
         self.networkCard = @"rtl8139";
@@ -55,14 +56,19 @@
         self.shareClipboardEnabled = YES;
     } else if ([target isEqualToString:@"mac99"]) {
         self.soundEnabled = NO;
+    } else if ([target isEqualToString:@"isapc"]) {
+        self.inputLegacy = YES; // no USB support
     }
     NSString *machineProp = [UTMConfiguration defaultMachinePropertiesForTarget:target];
     if (machineProp) {
         self.systemMachineProperties = machineProp;
     }
+    if (target && architecture) {
+        self.systemCPU = [UTMConfiguration defaultCPUForTarget:target architecture:architecture];
+    }
 }
 
-+ (nullable NSString *)defaultMachinePropertiesForTarget:(NSString *)target {
++ (nullable NSString *)defaultMachinePropertiesForTarget:(nullable NSString *)target {
     if ([target hasPrefix:@"pc"] || [target hasPrefix:@"q35"]) {
         return @"vmport=off";
     } else if ([target isEqualToString:@"virt"] || [target hasPrefix:@"virt-"]) {
@@ -82,6 +88,16 @@
         }
     }
     return @"ide";
+}
+
++ (NSString *)defaultCPUForTarget:(NSString *)target architecture:(NSString *)architecture {
+    if ([architecture isEqualToString:@"aarch64"]) {
+        return @"cortex-a72";
+    } else if ([architecture isEqualToString:@"arm"]) {
+        return @"cortex-a15";
+    } else {
+        return @"default";
+    }
 }
 
 @end

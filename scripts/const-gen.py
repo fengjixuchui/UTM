@@ -10,7 +10,7 @@ from collections import namedtuple
 
 Name = namedtuple('Name', 'name desc')
 Device = namedtuple('Device', 'name bus alias desc')
-Machines = namedtuple('Machines', 'name items default')
+Architecture = namedtuple('Architecture', 'name items default')
 
 TARGETS = [
     Name("alpha", "Alpha"),
@@ -50,10 +50,10 @@ DEFAULTS = {
     "aarch64": "virt",
     "arm": "virt",
     "avr": "mega",
-    "i386": "pc",
+    "i386": "q35",
     "rx": "gdbsim-r5f562n7",
     "tricore": "tricore_testboard",
-    "x86_64": "pc"
+    "x86_64": "q35"
 }
 
 HEADER = '''//
@@ -89,7 +89,7 @@ def parseListing(listing):
             break
         name = line[0:idx]
         description = line[idx:].strip()
-        result.add(Name(name, description))
+        result.add(Name(name, '{} ({})'.format(description, name)))
     return result
 
 def parseDeviceListing(listing):
@@ -103,9 +103,86 @@ def parseDeviceListing(listing):
             group = line.rstrip(':')
             continue
         search = re.search('^name "(?P<name>[^"]*)"(?:, bus (?P<bus>[^\s]+))?(?:, alias "(?P<alias>[^"]+)")?(?:, desc "(?P<desc>[^"]+)")?$', line)
-        item = Device(search.group('name'), search.group('bus'), search.group('alias'), search.group('desc'))
+        name = search.group('name')
+        desc = search.group('desc')
+        if not desc:
+            desc = name
+        else:
+            desc = '{} ({})'.format(desc, name)
+        item = Device(name, search.group('bus'), search.group('alias'), desc)
         result[group].add(item)
     return result
+
+def parseCpu(listing):
+    def parseMips(line):
+        search = re.search('^(?P<arch>\S+)\s+\'(?P<name>.+)\'.*', line)
+        return Name(search.group('name'), search.group('name'))
+    def parseSingle(line):
+        name = line.strip()
+        return Name(name, name)
+    def parseSparc(line):
+        search = re.search('^(?P<arch>\S+)\s+(?P<name>.+)\s+IU\s+(?P<iu>\S+)\s+FPU\s+(?P<fpu>\S+)\s+MMU\s+(?P<mmu>\S+)\s+NWINS\s+(?P<nwins>\d+).*$', line)
+        return Name(search.group('name'), search.group('name'))
+    def parseStandard(line):
+        search = re.search('^(?P<arch>\S+)\s+(?P<name>\S+)\s+(?P<desc>.*)?$', line)
+        name = search.group('name')
+        desc = search.group('desc').strip()
+        desc = ' '.join(desc.split())
+        if not desc or desc.startswith('(alias'):
+            desc = name
+        else:
+            desc = '{} ({})'.format(desc, name)
+        return Name(name, desc)
+    def parseSparcFlags(line):
+        if line.startswith('Default CPU feature flags'):
+            flags = line.split(':')[1].strip()
+            return ['-' + flag for flag in flags.split(' ')]
+        elif line.startswith('Available CPU feature flags'):
+            flags = line.split(':')[1].strip()
+            return ['+' + flag for flag in flags.split(' ')]
+        elif line.startswith('Numerical features'):
+            return []
+        else:
+            return None
+    def parseS390Flags(line):
+        if line.endswith(':'):
+            return []
+        else:
+            return [line.split(' ')[0]]
+    def parseX86Flags(line):
+        flags = []
+        for flag in line.split(' '):
+            if flag:
+                flags.append(flag)
+        return flags
+    output = enumerate(listing.splitlines())
+    cpus = [Name('default', 'Default')]
+    flags = []
+    if next(output, None) == None:
+        return (cpus, flags)
+    for (index, line) in output:
+        if not line:
+            break
+        if len(line.strip().split(' ')) == 1:
+            cpus.append(parseSingle(line))
+        elif line.startswith('Sparc'):
+            cpus.append(parseSparc(line))
+        elif line.startswith('MIPS'):
+            cpus.append(parseMips(line))
+        elif parseSparcFlags(line) != None:
+            flags += parseSparcFlags(line)
+        else:
+            cpus.append(parseStandard(line))
+    header = next(output, None)
+    if header == None:
+        return (cpus, flags)
+    for (index, line) in output:
+        if header[1] == 'Recognized CPUID flags:':
+            flags += parseX86Flags(line)
+        elif header[1] == 'Recognized feature flags:':
+            flags += parseS390Flags(line)
+    flags = sorted(set(flags)) # sort and de-duplicate
+    return (cpus, flags)
 
 def sortItems(items):
     return sorted(items, key=lambda item: item.desc if item.desc else item.name)
@@ -123,7 +200,6 @@ def getDefaultMachine(target, machines):
             return idx
         elif not find and "default" in machine.desc:
             return idx
-    print(machines)
     return -1
 
 def getSoundCards(qemu_path):
@@ -134,6 +210,10 @@ def getNetworkCards(qemu_path):
     output = subprocess.check_output([qemu_path, '-device', 'help']).decode('utf-8')
     devices = parseDeviceListing(output)
     return devices["Network devices"]
+
+def getCpus(qemu_path):
+    output = subprocess.check_output([qemu_path, '-cpu', 'help']).decode('utf-8')
+    return parseCpu(output)
 
 def generateArray(name, array):
     output  = '+ (NSArray<NSString *>*){} {{\n'.format(name)
@@ -166,24 +246,29 @@ def generateIndexMap(name, keyName, keys, indexMap):
     output += '}\n\n'
     return output
 
-def generate(targets, machines, networkCards, soundCards):
+def generate(targets, cpus, cpuFlags, machines, networkCards, soundCards):
     targetKeys = [item.name for item in targets]
     output  = HEADER
     output += generateArray('supportedArchitectures', targetKeys)
     output += generateArray('supportedArchitecturesPretty', [item.desc for item in targets])
+    output += generateMap('supportedCpusForArchitecture', 'architecture', targetKeys, {cpu.name: [item.name for item in cpu.items] for cpu in cpus})
+    output += generateMap('supportedCpusForArchitecturePretty', 'architecture', targetKeys, {cpu.name: [item.desc for item in cpu.items] for cpu in cpus})
+    output += generateMap('supportedCpuFlagsForArchitecture', 'architecture', targetKeys, {machine.name: [item for item in machine.items] for machine in cpuFlags})
     output += generateMap('supportedTargetsForArchitecture', 'architecture', targetKeys, {machine.name: [item.name for item in machine.items] for machine in machines})
     output += generateMap('supportedTargetsForArchitecturePretty', 'architecture', targetKeys, {machine.name: [item.desc for item in machine.items] for machine in machines})
     output += generateIndexMap('defaultTargetIndexForArchitecture', 'architecture', targetKeys, {machine.name: machine.default for machine in machines})
     output += generateArray('supportedNetworkCards', [item.name for item in networkCards])
-    output += generateArray('supportedNetworkCardsPretty', [item.desc if item.desc else item.name for item in networkCards])
+    output += generateArray('supportedNetworkCardsPretty', [item.desc for item in networkCards])
     output += generateArray('supportedSoundCardDevices', [item.name for item in soundCards])
-    output += generateArray('supportedSoundCardDevicesPretty', [item.desc if item.desc else item.name for item in soundCards])
+    output += generateArray('supportedSoundCardDevicesPretty', [item.desc for item in soundCards])
     output += '@end\n'
     return output
 
 def main(argv):
     base = argv[1]
     allMachines = []
+    allCpus = []
+    allCpuFlags = []
     soundCards = set()
     networkCards = set()
     # parse outputs
@@ -195,11 +280,14 @@ def main(argv):
                 raise "Invalid path."
         machines = sortItems(getMachines(path))
         default = getDefaultMachine(target.name, machines)
-        allMachines.append(Machines(target.name, machines, default))
+        allMachines.append(Architecture(target.name, machines, default))
         networkCards = networkCards.union(getNetworkCards(path))
         soundCards = soundCards.union(getSoundCards(path))
+        cpus, flags = getCpus(path)
+        allCpus.append(Architecture(target.name, cpus, 0))
+        allCpuFlags.append(Architecture(target.name, flags, 0))
     # generate constants
-    print(generate(TARGETS, allMachines, sortItems(networkCards), sortItems(soundCards)))
+    print(generate(TARGETS, allCpus, allCpuFlags, allMachines, sortItems(networkCards), sortItems(soundCards)))
 
 if __name__ == "__main__":
     main(sys.argv)
